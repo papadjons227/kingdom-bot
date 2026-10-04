@@ -32,7 +32,7 @@ async def check_prices_job():
 
         if not data:
             continue
-        
+
         new_price = data["price"]
         old_price = item.current_price
         
@@ -40,9 +40,10 @@ async def check_prices_job():
             diff = old_price - new_price
             percent = (diff / old_price) * 100
             platform_name = "Wildberries" if item.platform == "wb" else "Ozon"
+            
             text = (
                 f"🚨 **ЦЕНА УПАЛА [{platform_name}]!**\n\n"
-                f"📦 **{item.title}**\n"
+                f"📦 **{data['title']}**\n"
                 f"Было: ~{old_price:,.0f} ₽~\n"
                 f"Стало: **{new_price:,.0f} ₽**\n"
                 f"Скидка: **-{diff:,.0f} ₽** (-{percent:.1f}%)\n\n"
@@ -52,8 +53,8 @@ async def check_prices_job():
                 await bot.send_message(item.user_id, text, parse_mode="Markdown")
             except Exception as e:
                 logging.error(f"Ошибка отправки алерта {item.user_id}: {e}")
-        
-        await add_or_update_item(item.user_id, item.article, data["title"], new_price, item.platform)
+            
+            await add_or_update_item(item.user_id, item.article, data["title"], new_price, item.platform)
 
 # --- Хэндлеры бота ---
 @dp.message(CommandStart())
@@ -74,16 +75,17 @@ async def cmd_tracked(message: Message):
     if not items:
         await message.answer("У тебя пока нет товаров на слежке.")
         return
-
+    
     for item in items:
         is_wb = item.platform == "wb"
         url = f"https://www.wildberries.ru/catalog/{item.article}/detail.aspx" if is_wb else f"https://www.ozon.ru/product/{item.article}"
         badge = "🟣 WB" if is_wb else "🔵 Ozon"
-
+        
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_{item.platform}_{item.article}"),
             InlineKeyboardButton(text="🔗 Купить", url=url)
         ]])
+        
         await message.answer(
             f"{badge} **{item.title}**\n"
             f"ID/Артикул: `{item.article}`\n"
@@ -112,17 +114,14 @@ async def handle_product_link(message: Message):
         ozon_id = extract_ozon_id(resolved_url)
         
         if not ozon_id:
-            await status_msg.edit_text(
-                "❌ Не удалось достать ID товара Ozon.\n"
-                "💡 Открой ссылку в браузере и скинь полный URL со словом `/product/`."
-            )
+            await status_msg.edit_text("❌ Не удалось достать ID товара Ozon.\n💡 Открой ссылку в браузере и скинь полный URL со словом `/product/`.")
             return
-
+            
         data = await get_ozon_product_info(ozon_id)
         if not data:
-            await status_msg.edit_text("❌ Шлюз Ozon не отдал цену. Попробуй скинуть ссылку еще раз.")
+            await status_msg.edit_text("❌ Шлюз Ozon не отдал цену. Возможно, товар скрыт или защита слишком сильная.")
             return
-
+            
         await add_or_update_item(message.from_user.id, ozon_id, data["title"], data["price"], "ozon")
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🔗 Открыть Ozon", url=f"https://www.ozon.ru/product/{ozon_id}")
@@ -143,12 +142,12 @@ async def handle_product_link(message: Message):
         if not article:
             await status_msg.edit_text("❌ Не удалось извлечь артикул Wildberries.")
             return
-
+            
         data = await get_wb_product_info(article)
         if not data:
             await status_msg.edit_text(f"❌ Товар WB с артикулом `{article}` не найден.", parse_mode="Markdown")
             return
-
+            
         await add_or_update_item(message.from_user.id, article, data["title"], data["price"], "wb")
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🔗 Открыть WB", url=f"https://www.wildberries.ru/catalog/{article}/detail.aspx")
@@ -184,6 +183,7 @@ async def main():
     await init_db()
     scheduler.add_job(check_prices_job, "interval", minutes=30)
     scheduler.start()
+    
     logging.info("Око Рынка запущено (WB + Ozon)...")
     await asyncio.gather(start_web_server(), dp.start_polling(bot))
 
