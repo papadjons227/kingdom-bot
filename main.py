@@ -1,22 +1,25 @@
 import os
+import json
 import asyncio
 import logging
-import json
 from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from config import config
 from database import init_db, add_post, get_due_posts
-from config import config # Не забудь создать config.py с токеном!
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Поставь свой часовой пояс
+scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Поставь свой часовой пояс!
+
+# Временное хранилище черновиков (в памяти)
+user_drafts = {}
 
 # --- Фоновая задача: проверка постов каждую минуту ---
 async def check_posts_job():
@@ -60,12 +63,10 @@ async def cmd_start(message: Message):
         "4. Запланируй через /schedule [Часы] [Минуты] (например: /schedule 14 30)"
     )
 
-# Хранилище состояния для текущего создаваемого поста (в реале лучше FSM)
-user_drafts = {}
-
 @dp.message(F.photo)
 async def handle_photo(message: Message):
-    user_drafts[message.from_user.id] = {
+    uid = message.from_user.id
+    user_drafts[uid] = {
         "photo": message.photo[-1].file_id,
         "text": "",
         "buttons": []
@@ -79,7 +80,7 @@ async def handle_text(message: Message):
         user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
     
     user_drafts[uid]["text"] = message.text
-    await message.answer("📝 Текст сохранен. Можешь добавить кнопки или сразу планировать (/schedule).")
+    await message.answer(" Текст сохранен. Можешь добавить кнопки или сразу планировать (/schedule).")
 
 @dp.message(Command("add_button"))
 async def add_button_cmd(message: Message):
@@ -102,36 +103,48 @@ async def add_button_cmd(message: Message):
 @dp.message(Command("schedule"))
 async def schedule_post(message: Message):
     uid = message.from_user.id
+    
+    # Проверяем, есть ли черновик
     if uid not in user_drafts or not user_drafts[uid]["text"]:
-        await message.answer("❌ Сначала создай пост (фото + текст).")
+        await message.answer("❌ Сначала создай пост (скинь фото + напиши текст).")
         return
 
     args = message.text.split()
+    # Проверяем, что ввели время (должно быть 3 слова: /schedule ЧАС МИНУТА)
     if len(args) < 3:
-        await message.answer("❌ Используй: /schedule [Часы] [Минуты]")
+        await message.answer("❌ Используй формат: /schedule [Часы] [Минуты]\nПример: /schedule 14 30")
         return
 
     try:
         h, m = int(args[1]), int(args[2])
         now = datetime.now()
-        schedule_time = now.replace(hour=h, minute=m, second=0)
+        schedule_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
         
-        if schedule_time < now:
-            schedule_time += timedelta(days=1) # Если время уже прошло, ставим на завтра
+        # Если время уже прошло сегодня, ставим на завтра
+        if schedule_time <= now:
+            schedule_time += timedelta(days=1) 
             
         draft = user_drafts[uid]
+        # Превращаем кнопки в JSON для базы данных
         buttons_json = json.dumps([draft["buttons"]]) if draft["buttons"] else None
         
-        # ID канала, куда постить (замени на свой или сделай настройку)
-        TARGET_CHANNEL_ID = -1001234567890 
+        # ID канала берем из конфига
+        TARGET_CHANNEL_ID = config.TARGET_CHANNEL_ID 
         
-        await add_post(uid, TARGET_CHANNEL_ID, draft["text"], draft["photo"], buttons_json, schedule_time.strftime("%Y-%m-%d %H:%M:%S"))
+        await add_post(
+            uid, 
+            TARGET_CHANNEL_ID, 
+            draft["text"], 
+            draft["photo"], 
+            buttons_json, 
+            schedule_time.strftime("%Y-%m-%d %H:%M:%S")
+        )
         
-        await message.answer(f"⏳ Пост запланирован на {schedule_time.strftime('%H:%M')}!")
-        del user_drafts[uid] # Очищаем черновик
+        await message.answer(f"⏳ Пост успешно запланирован на {schedule_time.strftime('%H:%M')}! Жди хроно-импульс.")
+        del user_drafts[uid] # Очищаем черновик после планирования
         
     except ValueError:
-        await message.answer("❌ Неверный формат времени.")
+        await message.answer("❌ Ошибка: часы и минуты должны быть числами.")
 
 # --- Серверная заглушка для Render ---
 async def handle_ping(request):
