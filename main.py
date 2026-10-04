@@ -50,7 +50,7 @@ async def check_posts_job():
             logging.error(f"Ошибка отправки поста: {e}")
             await bot.send_message(user_id, f"❌ Ошибка при отправке поста: {e}")
 
-# --- Хэндлеры ---
+# --- ХЭНДЛЕРЫ (ПОРЯДОК ВАЖЕН!) ---
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
@@ -73,15 +73,7 @@ async def handle_photo(message: Message):
     }
     await message.answer("📸 Фото принято. Теперь напиши текст для поста.")
 
-@dp.message(F.text & ~F.command)
-async def handle_text(message: Message):
-    uid = message.from_user.id
-    if uid not in user_drafts:
-        user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
-    
-    user_drafts[uid]["text"] = message.text
-    await message.answer(" Текст сохранен. Можешь добавить кнопки или сразу планировать (/schedule).")
-
+# ⚠️ ВАЖНО: Команды должны идти ВЫШЕ общего обработчика текста
 @dp.message(Command("add_button"))
 async def add_button_cmd(message: Message):
     args = message.text.split(maxsplit=2)
@@ -96,7 +88,6 @@ async def add_button_cmd(message: Message):
     btn_text = args[1]
     btn_url = args[2]
     
-    # Добавляем кнопку в первый ряд (для простоты)
     user_drafts[uid]["buttons"].append({"text": btn_text, "url": btn_url})
     await message.answer(f"🔗 Кнопка '{btn_text}' добавлена.")
 
@@ -104,13 +95,11 @@ async def add_button_cmd(message: Message):
 async def schedule_post(message: Message):
     uid = message.from_user.id
     
-    # Проверяем, есть ли черновик
     if uid not in user_drafts or not user_drafts[uid]["text"]:
         await message.answer("❌ Сначала создай пост (скинь фото + напиши текст).")
         return
 
     args = message.text.split()
-    # Проверяем, что ввели время (должно быть 3 слова: /schedule ЧАС МИНУТА)
     if len(args) < 3:
         await message.answer("❌ Используй формат: /schedule [Часы] [Минуты]\nПример: /schedule 14 30")
         return
@@ -120,15 +109,12 @@ async def schedule_post(message: Message):
         now = datetime.now()
         schedule_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
         
-        # Если время уже прошло сегодня, ставим на завтра
         if schedule_time <= now:
             schedule_time += timedelta(days=1) 
             
         draft = user_drafts[uid]
-        # Превращаем кнопки в JSON для базы данных
         buttons_json = json.dumps([draft["buttons"]]) if draft["buttons"] else None
         
-        # ID канала берем из конфига
         TARGET_CHANNEL_ID = config.TARGET_CHANNEL_ID 
         
         await add_post(
@@ -141,10 +127,20 @@ async def schedule_post(message: Message):
         )
         
         await message.answer(f"⏳ Пост успешно запланирован на {schedule_time.strftime('%H:%M')}! Жди хроно-импульс.")
-        del user_drafts[uid] # Очищаем черновик после планирования
+        del user_drafts[uid]
         
     except ValueError:
         await message.answer("❌ Ошибка: часы и минуты должны быть числами.")
+
+# ️ ОБЩИЙ ТЕКСТ ИДЕТ ПОСЛЕДНИМ, ЧТОБЫ НЕ ПЕРЕХВАТЫВАТЬ КОМАНДЫ
+@dp.message(F.text & ~F.command)
+async def handle_text(message: Message):
+    uid = message.from_user.id
+    if uid not in user_drafts:
+        user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
+    
+    user_drafts[uid]["text"] = message.text
+    await message.answer("📝 Текст сохранен. Можешь добавить кнопки или сразу планировать (/schedule).")
 
 # --- Серверная заглушка для Render ---
 async def handle_ping(request):
