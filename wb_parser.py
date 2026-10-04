@@ -2,24 +2,22 @@ import re
 import aiohttp
 
 def extract_wb_article(text: str) -> int | None:
-    # Если в ссылке есть size=, проверяем сначала основной артикул в пути
     match = re.search(r"catalog/(\d+)/detail", text)
     if match:
         return int(match.group(1))
     
-    # Если кинули просто цифры
     digits = re.findall(r"\b\d{7,11}\b", text)
     if digits:
         return int(digits[0])
     return None
 
 async def get_wb_product_info(article: int) -> dict | None:
-    # Актуальный API поиска по артикулу для всех корзин
-    url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={article}"
+    # Используем мобильный API шлюз WB, который не режет зарубежные IP
+    url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={article}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "*/*",
-        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         "Origin": "https://www.wildberries.ru",
         "Referer": f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
     }
@@ -39,25 +37,20 @@ async def get_wb_product_info(article: int) -> dict | None:
                 name = prod.get("name", "Товар WB")
                 title = f"{brand} {name}".strip()
 
-                sizes = prod.get("sizes", [])
-                price = None
-                if sizes:
-                    price_total = sizes[0].get("price", {}).get("total")
-                    if price_total:
-                        price = float(price_total) / 100
+                # Проверяем цену: сначала salePriceU, затем sizes
+                price_raw = prod.get("salePriceU") or prod.get("priceU")
+                if not price_raw:
+                    sizes = prod.get("sizes", [])
+                    if sizes:
+                        price_raw = sizes[0].get("price", {}).get("total")
 
-                if not price:
-                    raw = prod.get("salePriceU") or prod.get("priceU")
-                    if raw:
-                        price = float(raw) / 100
-
-                if not price:
+                if not price_raw:
                     return None
 
                 return {
                     "article": article,
                     "title": title,
-                    "price": price,
+                    "price": float(price_raw) / 100,
                     "platform": "wb"
                 }
     except Exception:
