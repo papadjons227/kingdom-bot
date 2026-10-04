@@ -89,7 +89,7 @@ async def collect_posts_job():
     logging.info("✅ [Digest] Сбор постов завершен.")
 
 async def send_digest_job():
-    logging.info("📰 [Digest] Формирую ежедневный дайджест...")
+    logging.info(" [Digest] Формирую ежедневный дайджест...")
     # ИЗМЕНЕНИЕ: Теперь берем ТОП-10 постов вместо 3
     top_posts = await get_top_posts_per_channel(limit=10)
     
@@ -167,10 +167,22 @@ async def my_channels_cmd(message: Message):
         await message.answer("Нет отслеживаемых каналов. Используй /add_channel @username")
         return
     
+    # Экранируем спецсимволы Markdown для безопасности
+    def escape_md(text: str) -> str:
+        return text.replace("_", "\\_").replace("*", "\\*").replace("[", "\\[").replace("]", "\\]").replace("`", "\\`")
+    
     text = "** Твои каналы:**\n\n"
     for ch in subs:
-        text += f"• @{ch}\n"
-    await message.answer(text, parse_mode="Markdown")
+        # Экранируем username, чтобы подчеркивания не ломали разметку
+        safe_ch = escape_md(ch)
+        text += f"• @{safe_ch}\n"
+        
+    try:
+        await message.answer(text, parse_mode="Markdown")
+    except Exception as e:
+        # Если Markdown всё равно глючит, отправляем без форматирования
+        logging.warning(f"Ошибка Markdown в /my_channels: {e}")
+        await message.answer(text.replace("**", "").replace("\\_", "_"), parse_mode=None)
 
 # --- КОМАНДЫ ОТЛОЖКИ (ТОЖЕ ДО ОБЩЕГО ТЕКСТА) ---
 @dp.message(F.photo)
