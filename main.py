@@ -16,41 +16,54 @@ logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Поставь свой часовой пояс!
+# Убедись, что часовой пояс совпадает с твоим! Для Москвы/Самары это Europe/Moscow или Europe/Samara
+scheduler = AsyncIOScheduler(timezone="Europe/Moscow") 
 
-# Временное хранилище черновиков (в памяти)
 user_drafts = {}
 
 # --- Фоновая задача: проверка постов каждую минуту ---
 async def check_posts_job():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    posts = await get_due_posts(now)
+    logging.info(f"🕒 [Scheduler] Проверка постов. Текущее время сервера: {now}")
     
-    for post in posts:
-        _, user_id, chat_id, text, photo_id, buttons_json, _ = post
-        try:
-            kb = None
-            if buttons_json:
-                buttons_data = json.loads(buttons_json)
-                keyboard = []
-                for row in buttons_data:
-                    btn_row = []
-                    for btn in row:
-                        btn_row.append(InlineKeyboardButton(text=btn['text'], url=btn['url']))
-                    keyboard.append(btn_row)
-                kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    try:
+        posts = await get_due_posts(now)
+        logging.info(f"📦 [Scheduler] Найдено постов для отправки: {len(posts)}")
+        
+        if not posts:
+            return
 
-            if photo_id:
-                await bot.send_photo(chat_id, photo=photo_id, caption=text, reply_markup=kb)
-            else:
-                await bot.send_message(chat_id, text=text, reply_markup=kb)
+        for post in posts:
+            _, user_id, chat_id, text, photo_id, buttons_json, _ = post
+            logging.info(f"🚀 [Scheduler] Пытаюсь отправить пост пользователю {user_id} в канал {chat_id}")
             
-            await bot.send_message(user_id, f"✅ Пост успешно выкачен в канал!")
-        except Exception as e:
-            logging.error(f"Ошибка отправки поста: {e}")
-            await bot.send_message(user_id, f"❌ Ошибка при отправке поста: {e}")
+            try:
+                kb = None
+                if buttons_json:
+                    buttons_data = json.loads(buttons_json)
+                    keyboard = []
+                    for row in buttons_data:
+                        btn_row = []
+                        for btn in row:
+                            btn_row.append(InlineKeyboardButton(text=btn['text'], url=btn['url']))
+                        keyboard.append(btn_row)
+                    kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# --- ХЭНДЛЕРЫ (ПОРЯДОК ВАЖЕН!) ---
+                if photo_id:
+                    await bot.send_photo(chat_id, photo=photo_id, caption=text, reply_markup=kb)
+                else:
+                    await bot.send_message(chat_id, text=text, reply_markup=kb)
+                
+                await bot.send_message(user_id, f"✅ Пост успешно выкачен в канал!")
+                logging.info(f"✅ [Scheduler] Пост успешно отправлен!")
+            except Exception as e:
+                logging.error(f"❌ [Scheduler] Ошибка отправки поста: {e}")
+                await bot.send_message(user_id, f"❌ Ошибка при отправке поста: {e}")
+                
+    except Exception as e:
+        logging.error(f"💀 [Scheduler] Критическая ошибка в планировщике: {e}")
+
+# --- ХЭНДЛЕРЫ (СТРОГИЙ ПОРЯДОК!) ---
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
@@ -60,7 +73,7 @@ async def cmd_start(message: Message):
         "1. Отправь фото (опционально)\n"
         "2. Напиши текст поста\n"
         "3. Добавь кнопки через /add_button [Текст] [Ссылка]\n"
-        "4. Запланируй через /schedule [Часы] [Минуты] (например: /schedule 14 30)"
+        "4. Запланируй через /schedule [Часы] [Минуты]"
     )
 
 @dp.message(F.photo)
@@ -73,7 +86,7 @@ async def handle_photo(message: Message):
     }
     await message.answer("📸 Фото принято. Теперь напиши текст для поста.")
 
-# ⚠️ ВАЖНО: Команды должны идти ВЫШЕ общего обработчика текста
+# ⚠️ ВАЖНО: Команды ДОЛЖНЫ идти ВЫШЕ общего обработчика текста
 @dp.message(Command("add_button"))
 async def add_button_cmd(message: Message):
     args = message.text.split(maxsplit=2)
@@ -109,6 +122,7 @@ async def schedule_post(message: Message):
         now = datetime.now()
         schedule_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
         
+        # Если время уже прошло сегодня, ставим на завтра
         if schedule_time <= now:
             schedule_time += timedelta(days=1) 
             
@@ -132,7 +146,7 @@ async def schedule_post(message: Message):
     except ValueError:
         await message.answer("❌ Ошибка: часы и минуты должны быть числами.")
 
-# ️ ОБЩИЙ ТЕКСТ ИДЕТ ПОСЛЕДНИМ, ЧТОБЫ НЕ ПЕРЕХВАТЫВАТЬ КОМАНДЫ
+# ОБЩИЙ ТЕКСТ ИДЕТ ПОСЛЕДНИМ
 @dp.message(F.text & ~F.command)
 async def handle_text(message: Message):
     uid = message.from_user.id
