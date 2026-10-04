@@ -32,7 +32,7 @@ user_drafts = {}
 
 async def check_posts_job():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    logging.info(f"🕒 [Scheduler] Проверка постов. Текущее время сервера: {now}")
+    logging.info(f" [Scheduler] Проверка постов. Текущее время сервера: {now}")
     
     try:
         posts = await get_due_posts(now)
@@ -71,108 +71,9 @@ async def check_posts_job():
     except Exception as e:
         logging.error(f"💀 [Scheduler] Критическая ошибка планировщика: {e}")
 
-# ХЭНДЛЕРЫ ОТЛОЖКИ (СТРОГИЙ ПОРЯДОК!)
-@dp.message(CommandStart())
-async def cmd_start(message: Message):
-    await message.answer(
-        "👻 **Chrono-Poster + Digest Lord активированы.**\n\n"
-        "**Отложка:**\n"
-        "1. Скинь фото → напиши текст\n"
-        "2. /add_button [Текст] [Ссылка]\n"
-        "3. /schedule [Часы] [Минуты]\n\n"
-        "**Дайджесты:**\n"
-        "/add_channel @username — добавить канал\n"
-        "/my_channels — список каналов\n"
-        "Топ-3 поста выкатываются каждый день в 20:00 по Оренбургу."
-    )
-
-@dp.message(F.photo)
-async def handle_photo(message: Message):
-    uid = message.from_user.id
-    user_drafts[uid] = {"photo": message.photo[-1].file_id, "text": "", "buttons": []}
-    await message.answer("📸 Фото принято. Теперь напиши текст для поста.")
-
-@dp.message(Command("add_button"))
-async def add_button_cmd(message: Message):
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        await message.answer("❌ Используй: /add_button [Текст кнопки] [Ссылка]")
-        return
-    
-    uid = message.from_user.id
-    if uid not in user_drafts:
-        user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
-        
-    user_drafts[uid]["buttons"].append({"text": args[1], "url": args[2]})
-    await message.answer(f"🔗 Кнопка '{args[1]}' добавлена.")
-
-@dp.message(Command("schedule"))
-async def schedule_post(message: Message):
-    uid = message.from_user.id
-    if uid not in user_drafts or not user_drafts[uid]["text"]:
-        await message.answer("❌ Сначала создай пост (скинь фото + напиши текст).")
-        return
-
-    args = message.text.split()
-    if len(args) < 3:
-        await message.answer("❌ Формат: /schedule [Часы] [Минуты]\nПример: /schedule 14 30")
-        return
-
-    try:
-        h, m = int(args[1]), int(args[2])
-        now = datetime.now()
-        schedule_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if schedule_time <= now:
-            schedule_time += timedelta(days=1) 
-            
-        draft = user_drafts[uid]
-        buttons_json = json.dumps([draft["buttons"]]) if draft["buttons"] else None
-        
-        await add_post(uid, config.TARGET_CHANNEL_ID, draft["text"], draft["photo"], buttons_json, schedule_time.strftime("%Y-%m-%d %H:%M:%S"))
-        await message.answer(f" Пост запланирован на {schedule_time.strftime('%H:%M')}! Жди хроно-импульс.")
-        del user_drafts[uid]
-    except ValueError:
-        await message.answer("❌ Часы и минуты должны быть числами.")
-
-@dp.message(F.text & ~F.command)
-async def handle_text(message: Message):
-    uid = message.from_user.id
-    if uid not in user_drafts:
-        user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
-    user_drafts[uid]["text"] = message.text
-    await message.answer("📝 Текст сохранен. Добавь кнопки или пиши /schedule.")
-
-
 # ==============================================================================
 # 2. ЛОГИКА DIGEST LORD (СБОРЩИК КАНАЛОВ БЕЗ АДМИНКИ)
 # ==============================================================================
-
-@dp.message(Command("add_channel"))
-async def add_channel_cmd(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("❌ Используй: /add_channel @username_канала")
-        return
-    
-    username = args[1].replace("@", "").strip()
-    success = await add_subscription(message.from_user.id, username)
-    
-    if success:
-        await message.answer(f"✅ Канал **@{username}** добавлен!\nБот будет собирать топы раз в сутки.", parse_mode="Markdown")
-    else:
-        await message.answer("️ Этот канал уже отслеживается.")
-
-@dp.message(Command("my_channels"))
-async def my_channels_cmd(message: Message):
-    subs = await get_user_subscriptions(message.from_user.id)
-    if not subs:
-        await message.answer("Нет отслеживаемых каналов. Используй /add_channel @username")
-        return
-    
-    text = "**📋 Твои каналы:**\n\n"
-    for ch in subs:
-        text += f"• @{ch}\n"
-    await message.answer(text, parse_mode="Markdown")
 
 async def collect_posts_job():
     logging.info("🕷️ [Digest] Начинаю сбор постов из каналов...")
@@ -222,6 +123,111 @@ async def send_digest_job():
             logging.error(f"Не удалось отправить дайджест пользователю {uid}: {e}")
     
     logging.info(f"✅ [Digest] Дайджест разослан {sent_count} пользователям!")
+
+
+# ==============================================================================
+# ХЭНДЛЕРЫ (СТРОГИЙ ПОРЯДОК: КОМАНДЫ ВЫШЕ ОБЩЕГО ТЕКСТА!)
+# ==============================================================================
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    await message.answer(
+        "👻 **Chrono-Poster + Digest Lord активированы.**\n\n"
+        "**Отложка:**\n"
+        "1. Скинь фото → напиши текст\n"
+        "2. /add_button [Текст] [Ссылка]\n"
+        "3. /schedule [Часы] [Минуты]\n\n"
+        "**Дайджесты:**\n"
+        "/add_channel @username — добавить канал\n"
+        "/my_channels — список каналов\n"
+        "Топ-3 поста выкатываются каждый день в 20:00 по Оренбургу."
+    )
+
+# --- КОМАНДЫ ДАЙДЖЕСТОВ (ИДУТ ДО ОБЩЕГО ТЕКСТА) ---
+@dp.message(Command("add_channel"))
+async def add_channel_cmd(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("❌ Используй: /add_channel @username_канала")
+        return
+    
+    username = args[1].replace("@", "").strip()
+    success = await add_subscription(message.from_user.id, username)
+    
+    if success:
+        await message.answer(f"✅ Канал **@{username}** добавлен!\nБот будет собирать топы раз в сутки.", parse_mode="Markdown")
+    else:
+        await message.answer("️ Этот канал уже отслеживается.")
+
+@dp.message(Command("my_channels"))
+async def my_channels_cmd(message: Message):
+    subs = await get_user_subscriptions(message.from_user.id)
+    if not subs:
+        await message.answer("Нет отслеживаемых каналов. Используй /add_channel @username")
+        return
+    
+    text = "** Твои каналы:**\n\n"
+    for ch in subs:
+        text += f"• @{ch}\n"
+    await message.answer(text, parse_mode="Markdown")
+
+# --- КОМАНДЫ ОТЛОЖКИ (ТОЖЕ ДО ОБЩЕГО ТЕКСТА) ---
+@dp.message(F.photo)
+async def handle_photo(message: Message):
+    uid = message.from_user.id
+    user_drafts[uid] = {"photo": message.photo[-1].file_id, "text": "", "buttons": []}
+    await message.answer("📸 Фото принято. Теперь напиши текст для поста.")
+
+@dp.message(Command("add_button"))
+async def add_button_cmd(message: Message):
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer("❌ Используй: /add_button [Текст кнопки] [Ссылка]")
+        return
+    
+    uid = message.from_user.id
+    if uid not in user_drafts:
+        user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
+        
+    user_drafts[uid]["buttons"].append({"text": args[1], "url": args[2]})
+    await message.answer(f"🔗 Кнопка '{args[1]}' добавлена.")
+
+@dp.message(Command("schedule"))
+async def schedule_post(message: Message):
+    uid = message.from_user.id
+    if uid not in user_drafts or not user_drafts[uid]["text"]:
+        await message.answer("❌ Сначала создай пост (скинь фото + напиши текст).")
+        return
+
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("❌ Формат: /schedule [Часы] [Минуты]\nПример: /schedule 14 30")
+        return
+
+    try:
+        h, m = int(args[1]), int(args[2])
+        now = datetime.now()
+        schedule_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if schedule_time <= now:
+            schedule_time += timedelta(days=1) 
+            
+        draft = user_drafts[uid]
+        buttons_json = json.dumps([draft["buttons"]]) if draft["buttons"] else None
+        
+        await add_post(uid, config.TARGET_CHANNEL_ID, draft["text"], draft["photo"], buttons_json, schedule_time.strftime("%Y-%m-%d %H:%M:%S"))
+        await message.answer(f" Пост запланирован на {schedule_time.strftime('%H:%M')}! Жди хроно-импульс.")
+        del user_drafts[uid]
+    except ValueError:
+        await message.answer("❌ Часы и минуты должны быть числами.")
+
+# ️ ВАЖНО: ОБЩИЙ ТЕКСТ ИДЕТ СТРОГО ПОСЛЕДНИМ
+@dp.message(F.text & ~F.command)
+async def handle_text(message: Message):
+    uid = message.from_user.id
+    if uid not in user_drafts:
+        user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
+    user_drafts[uid]["text"] = message.text
+    await message.answer("📝 Текст сохранен. Добавь кнопки или пиши /schedule.")
 
 
 # ==============================================================================
