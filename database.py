@@ -1,75 +1,36 @@
-from datetime import datetime
-from sqlalchemy import BigInteger, String, Float, DateTime, select, delete
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncAttrs
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+import aiosqlite
+import os
 
-DATABASE_URL = "sqlite+aiosqlite:///./kingdom.db"
-
-engine = create_async_engine(DATABASE_URL, echo=False)
-async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-class Base(AsyncAttrs, DeclarativeBase):
-    pass
-
-class TrackedItem(Base):
-    __tablename__ = "tracked_items"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
-    article: Mapped[int] = mapped_column(BigInteger, index=True)
-    platform: Mapped[str] = mapped_column(String(20), default="wb")  # "wb" или "ozon"
-    title: Mapped[str] = mapped_column(String(255))
-    current_price: Mapped[float] = mapped_column(Float)
-    last_checked: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+DB_PATH = "posts.db"
 
 async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-async def add_or_update_item(user_id: int, article: int, title: str, price: float, platform: str = "wb"):
-    async with async_session() as session:
-        stmt = select(TrackedItem).where(
-            TrackedItem.user_id == user_id, 
-            TrackedItem.article == article,
-            TrackedItem.platform == platform
-        )
-        result = await session.execute(stmt)
-        item = result.scalar_one_or_none()
-
-        if item:
-            item.current_price = price
-            item.title = title
-            item.last_checked = datetime.utcnow()
-        else:
-            item = TrackedItem(
-                user_id=user_id, 
-                article=article, 
-                title=title, 
-                current_price=price, 
-                platform=platform
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                chat_id INTEGER,
+                text TEXT,
+                photo_file_id TEXT,
+                buttons TEXT, -- Храним кнопки как JSON строку
+                schedule_time TIMESTAMP
             )
-            session.add(item)
+        """)
+        await db.commit()
 
-        await session.commit()
-
-async def get_user_items(user_id: int):
-    async with async_session() as session:
-        stmt = select(TrackedItem).where(TrackedItem.user_id == user_id)
-        result = await session.execute(stmt)
-        return result.scalars().all()
-
-async def get_all_items():
-    async with async_session() as session:
-        stmt = select(TrackedItem)
-        result = await session.execute(stmt)
-        return result.scalars().all()
-
-async def remove_item(user_id: int, article: int, platform: str = "wb"):
-    async with async_session() as session:
-        stmt = delete(TrackedItem).where(
-            TrackedItem.user_id == user_id, 
-            TrackedItem.article == article,
-            TrackedItem.platform == platform
+async def add_post(user_id, chat_id, text, photo_file_id, buttons, schedule_time):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO scheduled_posts (user_id, chat_id, text, photo_file_id, buttons, schedule_time) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, chat_id, text, photo_file_id, buttons, schedule_time)
         )
-        await session.execute(stmt)
-        await session.commit()
+        await db.commit()
+
+async def get_due_posts(current_time):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT * FROM scheduled_posts WHERE schedule_time <= ?", (current_time,))
+        posts = await cursor.fetchall()
+        # Удаляем отправленные посты
+        await db.execute("DELETE FROM scheduled_posts WHERE schedule_time <= ?", (current_time,))
+        await db.commit()
+        return posts
