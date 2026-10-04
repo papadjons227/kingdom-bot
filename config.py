@@ -1,9 +1,10 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from dataclasses import dataclass
 
-class Settings(BaseSettings):
-    BOT_TOKEN: str
-    ADMIN_ID: int
+@dataclass
+class Config:
+    BOT_TOKEN: str = os.getenv("BOT_TOKEN")
+    # ID канала, куда будем постить (можно убрать, если будешь передавать его через команду)
+    TARGET_CHANNEL_ID: int = int(os.getenv("TARGET_CHANNEL_ID", "-1001234567890")) 
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
-
-config = Settings()
+config = Config()
