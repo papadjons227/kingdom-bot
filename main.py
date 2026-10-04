@@ -16,9 +16,10 @@ logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
-# Убедись, что часовой пояс совпадает с твоим! Для Москвы/Самары это Europe/Moscow или Europe/Samara
-scheduler = AsyncIOScheduler(timezone="Europe/Moscow") 
+# Часовой пояс Оренбурга (UTC+5)
+scheduler = AsyncIOScheduler(timezone="Asia/Yekaterinburg") 
 
+# Временное хранилище черновиков (в памяти)
 user_drafts = {}
 
 # --- Фоновая задача: проверка постов каждую минуту ---
@@ -61,7 +62,7 @@ async def check_posts_job():
                 await bot.send_message(user_id, f"❌ Ошибка при отправке поста: {e}")
                 
     except Exception as e:
-        logging.error(f"💀 [Scheduler] Критическая ошибка в планировщике: {e}")
+        logging.error(f" [Scheduler] Критическая ошибка в планировщике: {e}")
 
 # --- ХЭНДЛЕРЫ (СТРОГИЙ ПОРЯДОК!) ---
 
