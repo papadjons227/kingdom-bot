@@ -90,7 +90,8 @@ async def collect_posts_job():
 
 async def send_digest_job():
     logging.info("📰 [Digest] Формирую ежедневный дайджест...")
-    top_posts = await get_top_posts_per_channel(limit=3)
+    # ИЗМЕНЕНИЕ: Теперь берем ТОП-10 постов вместо 3
+    top_posts = await get_top_posts_per_channel(limit=10)
     
     if not top_posts:
         logging.info("️ [Digest] Нет данных для дайджеста.")
@@ -140,7 +141,7 @@ async def cmd_start(message: Message):
         "**Дайджесты:**\n"
         "/add_channel @username — добавить канал\n"
         "/my_channels — список каналов\n"
-        "Топ-3 поста выкатываются каждый день в 20:00 по Оренбургу."
+        "Топ-10 постов выкатываются каждый день в 07:30 по Оренбургу."
     )
 
 # --- КОМАНДЫ ДАЙДЖЕСТОВ (ИДУТ ДО ОБЩЕГО ТЕКСТА) ---
@@ -255,7 +256,8 @@ async def main():
     
     # Задачи Digest Lord
     scheduler.add_job(collect_posts_job, "interval", hours=6) 
-    scheduler.add_job(send_digest_job, CronTrigger(hour=20, minute=0, timezone="Asia/Yekaterinburg")) 
+    # ИЗМЕНЕНИЕ: Выкатка теперь в 07:30 по Оренбургу
+    scheduler.add_job(send_digest_job, CronTrigger(hour=7, minute=30, timezone="Asia/Yekaterinburg")) 
     
     scheduler.start()
     logging.info("Chrono-Poster + Digest Lord запущены (Оренбург UTC+5)...")
