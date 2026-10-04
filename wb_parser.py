@@ -11,8 +11,8 @@ def extract_wb_article(text: str) -> int | None:
     return None
 
 async def get_wb_product_info(article: int) -> dict | None:
-    # Прямой эндпоинт мобильного API Wildberries (не режет дата-центры)
-    url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&nm={article}"
+    # Эндпоинт поиска WB — отдает данные даже на иностранных IP
+    url = f"https://search.wb.ru/exactmatch/ru/common/v7/search?curr=rub&dest=-1257786&query={article}&resultset=catalog"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "*/*"
@@ -25,18 +25,20 @@ async def get_wb_product_info(article: int) -> dict | None:
                     return None
                 data = await resp.json(content_type=None)
                 products = data.get("data", {}).get("products", [])
-                if not products:
-                    # Резервный v2
-                    v2_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={article}"
-                    async with session.get(v2_url, timeout=10) as resp2:
-                        if resp2.status == 200:
-                            data2 = await resp2.json(content_type=None)
-                            products = data2.get("data", {}).get("products", [])
                 
-                if not products:
+                # Ищем именно наш артикул среди результатов
+                prod = None
+                for p in products:
+                    if p.get("id") == article:
+                        prod = p
+                        break
+                
+                if not prod and products:
+                    prod = products[0]
+
+                if not prod:
                     return None
 
-                prod = products[0]
                 brand = prod.get("brand", "")
                 name = prod.get("name", "Товар WB")
                 title = f"{brand} {name}".strip()
