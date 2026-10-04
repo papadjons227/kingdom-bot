@@ -1,177 +1,145 @@
 import os
-import re
 import asyncio
 import logging
+import json
+from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import config
-from database import init_db, add_or_update_item, get_user_items, get_all_items, remove_item
-from wb_parser import get_wb_product_info, extract_wb_article
-from ozon_parser import get_ozon_product_info, extract_ozon_id, resolve_ozon_link
+from database import init_db, add_post, get_due_posts
+from config import config # Не забудь создать config.py с токеном!
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler(timezone="Europe/Samara")
+scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Поставь свой часовой пояс
 
-# --- Фоновая проверка цен (каждые 30 мин) ---
-async def check_prices_job():
-    items = await get_all_items()
-    for item in items:
-        if item.platform == "wb":
-            data = await get_wb_product_info(item.article)
-            buy_url = f"https://www.wildberries.ru/catalog/{item.article}/detail.aspx"
-        else:
-            data = await get_ozon_product_info(item.article)
-            buy_url = f"https://www.ozon.ru/product/{item.article}"
+# --- Фоновая задача: проверка постов каждую минуту ---
+async def check_posts_job():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    posts = await get_due_posts(now)
+    
+    for post in posts:
+        _, user_id, chat_id, text, photo_id, buttons_json, _ = post
+        try:
+            kb = None
+            if buttons_json:
+                buttons_data = json.loads(buttons_json)
+                keyboard = []
+                for row in buttons_data:
+                    btn_row = []
+                    for btn in row:
+                        btn_row.append(InlineKeyboardButton(text=btn['text'], url=btn['url']))
+                    keyboard.append(btn_row)
+                kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-        if not data:
-            continue
-
-        new_price = data["price"]
-        old_price = item.current_price
-        
-        if new_price < old_price:
-            diff = old_price - new_price
-            percent = (diff / old_price) * 100
-            platform_name = "Wildberries" if item.platform == "wb" else "Ozon"
+            if photo_id:
+                await bot.send_photo(chat_id, photo=photo_id, caption=text, reply_markup=kb)
+            else:
+                await bot.send_message(chat_id, text=text, reply_markup=kb)
             
-            text = (
-                f"🚨 **ЦЕНА УПАЛА [{platform_name}]!**\n\n"
-                f"📦 **{data['title']}**\n"
-                f"Было: ~{old_price:,.0f} ₽~\n"
-                f"Стало: **{new_price:,.0f} ₽**\n"
-                f"Скидка: **-{diff:,.0f} ₽** (-{percent:.1f}%)\n\n"
-                f"[Перейти к товару]({buy_url})"
-            )
-            try:
-                await bot.send_message(item.user_id, text, parse_mode="Markdown")
-            except Exception as e:
-                logging.error(f"Ошибка отправки алерта {item.user_id}: {e}")
-            
-            await add_or_update_item(item.user_id, item.article, data["title"], new_price, item.platform)
+            await bot.send_message(user_id, f"✅ Пост успешно выкачен в канал!")
+        except Exception as e:
+            logging.error(f"Ошибка отправки поста: {e}")
+            await bot.send_message(user_id, f"❌ Ошибка при отправке поста: {e}")
 
-# --- Хэндлеры бота ---
+# --- Хэндлеры ---
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
-        "🏰 **Око Рынка активировано.**\n\n"
-        "Отправь мне:\n"
-        "• Артикул или ссылку **Wildberries**\n"
-        "• Ссылку на товар **Ozon**\n\n"
-        "Команды:\n"
-        "• `/tracked` — список твоих товаров на контроле",
-        parse_mode="Markdown"
+        "👻 **Chrono-Poster активирован.**\n\n"
+        "Как пользоваться:\n"
+        "1. Отправь фото (опционально)\n"
+        "2. Напиши текст поста\n"
+        "3. Добавь кнопки через /add_button [Текст] [Ссылка]\n"
+        "4. Запланируй через /schedule [Часы] [Минуты] (например: /schedule 14 30)"
     )
 
-@dp.message(Command("tracked"))
-async def cmd_tracked(message: Message):
-    items = await get_user_items(message.from_user.id)
-    if not items:
-        await message.answer("У тебя пока нет товаров на слежке.")
+# Хранилище состояния для текущего создаваемого поста (в реале лучше FSM)
+user_drafts = {}
+
+@dp.message(F.photo)
+async def handle_photo(message: Message):
+    user_drafts[message.from_user.id] = {
+        "photo": message.photo[-1].file_id,
+        "text": "",
+        "buttons": []
+    }
+    await message.answer("📸 Фото принято. Теперь напиши текст для поста.")
+
+@dp.message(F.text & ~F.command)
+async def handle_text(message: Message):
+    uid = message.from_user.id
+    if uid not in user_drafts:
+        user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
+    
+    user_drafts[uid]["text"] = message.text
+    await message.answer("📝 Текст сохранен. Можешь добавить кнопки или сразу планировать (/schedule).")
+
+@dp.message(Command("add_button"))
+async def add_button_cmd(message: Message):
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer("❌ Используй: /add_button [Текст кнопки] [Ссылка]")
         return
     
-    for item in items:
-        is_wb = item.platform == "wb"
-        url = f"https://www.wildberries.ru/catalog/{item.article}/detail.aspx" if is_wb else f"https://www.ozon.ru/product/{item.article}"
-        badge = "🟣 WB" if is_wb else "🔵 Ozon"
+    uid = message.from_user.id
+    if uid not in user_drafts:
+        user_drafts[uid] = {"photo": None, "text": "", "buttons": []}
         
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_{item.platform}_{item.article}"),
-            InlineKeyboardButton(text="🔗 Купить", url=url)
-        ]])
-        
-        await message.answer(
-            f"{badge} **{item.title}**\n"
-            f"ID/Артикул: `{item.article}`\n"
-            f"Зафиксированная цена: **{item.current_price:,.0f} ₽**",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
+    btn_text = args[1]
+    btn_url = args[2]
+    
+    # Добавляем кнопку в первый ряд (для простоты)
+    user_drafts[uid]["buttons"].append({"text": btn_text, "url": btn_url})
+    await message.answer(f"🔗 Кнопка '{btn_text}' добавлена.")
 
-@dp.callback_query(F.data.startswith("del_"))
-async def handle_delete(call: CallbackQuery):
-    parts = call.data.split("_")
-    platform = parts[1]
-    article = int(parts[2])
-    await remove_item(call.from_user.id, article, platform)
-    await call.message.edit_text("❌ Товар удален из отслеживания.")
-    await call.answer()
-
-@dp.message(F.text)
-async def handle_product_link(message: Message):
-    text = message.text.strip()
-    status_msg = await message.answer("🔍 Распознаю товар и проверяю цену...")
-
-    # 1. Проверяем Ozon
-    if "ozon.ru" in text:
-        resolved_url = await resolve_ozon_link(text)
-        ozon_id = extract_ozon_id(resolved_url)
-        
-        if not ozon_id:
-            await status_msg.edit_text("❌ Не удалось достать ID товара Ozon.\n💡 Открой ссылку в браузере и скинь полный URL со словом `/product/`.")
-            return
-            
-        data = await get_ozon_product_info(ozon_id)
-        if not data:
-            await status_msg.edit_text("❌ Шлюз Ozon не отдал цену. Возможно, товар скрыт или защита слишком сильная.")
-            return
-            
-        await add_or_update_item(message.from_user.id, ozon_id, data["title"], data["price"], "ozon")
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔗 Открыть Ozon", url=f"https://www.ozon.ru/product/{ozon_id}")
-        ]])
-        await status_msg.edit_text(
-            f"🎯 **Товар Ozon взят на слежку!**\n\n"
-            f"📦 **{data['title']}**\n"
-            f"SKU: `{ozon_id}`\n"
-            f"Текущая цена: **{data['price']:,.0f} ₽**",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
+@dp.message(Command("schedule"))
+async def schedule_post(message: Message):
+    uid = message.from_user.id
+    if uid not in user_drafts or not user_drafts[uid]["text"]:
+        await message.answer("❌ Сначала создай пост (фото + текст).")
         return
 
-    # 2. Проверяем Wildberries
-    if "wildberries.ru" in text or text.isdigit():
-        article = extract_wb_article(text)
-        if not article:
-            await status_msg.edit_text("❌ Не удалось извлечь артикул Wildberries.")
-            return
-            
-        data = await get_wb_product_info(article)
-        if not data:
-            await status_msg.edit_text(f"❌ Товар WB с артикулом `{article}` не найден.", parse_mode="Markdown")
-            return
-            
-        await add_or_update_item(message.from_user.id, article, data["title"], data["price"], "wb")
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔗 Открыть WB", url=f"https://www.wildberries.ru/catalog/{article}/detail.aspx")
-        ]])
-        await status_msg.edit_text(
-            f"🎯 **Товар WB взят на слежку!**\n\n"
-            f"📦 **{data['title']}**\n"
-            f"Артикул: `{article}`\n"
-            f"Текущая цена: **{data['price']:,.0f} ₽**",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("❌ Используй: /schedule [Часы] [Минуты]")
         return
 
-    await status_msg.edit_text("Не понял ссылку. Отправь ссылку на Ozon или артикул/ссылку Wildberries.")
+    try:
+        h, m = int(args[1]), int(args[2])
+        now = datetime.now()
+        schedule_time = now.replace(hour=h, minute=m, second=0)
+        
+        if schedule_time < now:
+            schedule_time += timedelta(days=1) # Если время уже прошло, ставим на завтра
+            
+        draft = user_drafts[uid]
+        buttons_json = json.dumps([draft["buttons"]]) if draft["buttons"] else None
+        
+        # ID канала, куда постить (замени на свой или сделай настройку)
+        TARGET_CHANNEL_ID = -1001234567890 
+        
+        await add_post(uid, TARGET_CHANNEL_ID, draft["text"], draft["photo"], buttons_json, schedule_time.strftime("%Y-%m-%d %H:%M:%S"))
+        
+        await message.answer(f"⏳ Пост запланирован на {schedule_time.strftime('%H:%M')}!")
+        del user_drafts[uid] # Очищаем черновик
+        
+    except ValueError:
+        await message.answer("❌ Неверный формат времени.")
 
 # --- Серверная заглушка для Render ---
 async def handle_ping(request):
-    return web.Response(text="Market Eye Alive")
+    return web.Response(text="Chrono-Poster Alive")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_ping)
-    app.router.add_get("/health", handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", 8080))
@@ -181,10 +149,9 @@ async def start_web_server():
 # --- Главный запуск ---
 async def main():
     await init_db()
-    scheduler.add_job(check_prices_job, "interval", minutes=30)
+    scheduler.add_job(check_posts_job, "interval", minutes=1)
     scheduler.start()
-    
-    logging.info("Око Рынка запущено (WB + Ozon)...")
+    logging.info("Chrono-Poster запущен...")
     await asyncio.gather(start_web_server(), dp.start_polling(bot))
 
 if __name__ == "__main__":
