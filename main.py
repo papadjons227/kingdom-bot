@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config import config
 from database import init_db, add_or_update_item, get_user_items, get_all_items, remove_item
 from wb_parser import get_wb_product_info
-from ozon_parser import get_ozon_product_info, extract_ozon_id
+from ozon_parser import get_ozon_product_info, extract_ozon_id, resolve_ozon_link
 
 logging.basicConfig(level=logging.INFO)
 
@@ -42,7 +42,7 @@ async def check_prices_job():
             platform_name = "Wildberries" if item.platform == "wb" else "Ozon"
             text = (
                 f"🚨 **ЦЕНА УПАЛА [{platform_name}]!**\n\n"
-                f"📦 **{item.title}**\n"
+                f"📦 **{data['title']}**\n"
                 f"Было: ~{old_price:,.0f} ₽~\n"
                 f"Стало: **{new_price:,.0f} ₽**\n"
                 f"Скидка: **-{diff:,.0f} ₽** (-{percent:.1f}%)\n\n"
@@ -108,14 +108,15 @@ async def handle_product_link(message: Message):
 
     # 1. Проверяем Ozon
     if "ozon.ru" in text:
-        ozon_id = extract_ozon_id(text)
+        resolved_url = await resolve_ozon_link(text)
+        ozon_id = extract_ozon_id(resolved_url)
         if not ozon_id:
-            await status_msg.edit_text("❌ Не удалось найти ID товара Ozon в ссылке.")
+            await status_msg.edit_text("❌ Не удалось достать ID товара Ozon в ссылке.")
             return
 
         data = await get_ozon_product_info(ozon_id)
         if not data:
-            await status_msg.edit_text("❌ Шлюз Ozon не ответил. Возможно, товар раскуплен или ссылка некорректная.")
+            await status_msg.edit_text("❌ Шлюз Ozon не ответил. Возможно, товар раскуплен или снят с продажи.")
             return
 
         await add_or_update_item(message.from_user.id, ozon_id, data["title"], data["price"], "ozon")
